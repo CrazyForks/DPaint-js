@@ -30,6 +30,7 @@ import Palette from "../ui/palette.js";
 import Color from "../util/color.js";
 import ImageFile from "../image.js";
 import HAMEncoder from "./hamEncoder.js";
+import ByteRun1 from "./byteRun1.js";
 
 const FILETYPE = {
     IFF: { name: "IFF file" },
@@ -104,6 +105,73 @@ const IFF = (function () {
             chunk.name = file.readString(4);
             chunk.size = file.readDWord();
             return chunk;
+        }
+
+        function readByteRunLine(lineWidth, bodyEnd, repeat128) {
+            const result = ByteRun1.readLine(file, lineWidth, bodyEnd, repeat128);
+            if (result.extendedRuns) {
+                img.byteRun1ExtendedRuns = (img.byteRun1ExtendedRuns || 0) + result.extendedRuns;
+            }
+            return result.line;
+        }
+
+        function readUncompressedLine(lineWidth) {
+            const line = new Uint8Array(lineWidth);
+            for (let x = 0; x < lineWidth; x++) line[x] = file.readUbyte();
+            return line;
+        }
+
+        function decodeTrueColorBody(lineWidth, bodyEnd, repeat128ByteRun) {
+            const rgba = new Uint8ClampedArray(img.width * img.height * 4);
+            const imageByteWidth = Math.ceil(img.width / 8);
+            const fullByteWidth = Math.floor(img.width / 8);
+            const hasPartialByte = imageByteWidth !== fullByteWidth;
+
+            for (let y = 0; y < img.height; y++) {
+                const rowOffset = y * img.width * 4;
+                for (let x = 0; x < img.width; x++) rgba[rowOffset + x * 4 + 3] = 255;
+
+                for (let plane = 0; plane < img.numPlanes; plane++) {
+                    const line = img.compression
+                        ? readByteRunLine(lineWidth, bodyEnd, repeat128ByteRun)
+                        : readUncompressedLine(lineWidth);
+                    const channel = plane >> 3;
+                    const value = 1 << (plane & 7);
+
+                    for (let b = 0; b < fullByteWidth; b++) {
+                        const bits = line[b];
+                        if (!bits) continue;
+
+                        let x = b * 8;
+                        if (bits & 0x80) rgba[rowOffset + x * 4 + channel] |= value;
+                        x++;
+                        if (bits & 0x40) rgba[rowOffset + x * 4 + channel] |= value;
+                        x++;
+                        if (bits & 0x20) rgba[rowOffset + x * 4 + channel] |= value;
+                        x++;
+                        if (bits & 0x10) rgba[rowOffset + x * 4 + channel] |= value;
+                        x++;
+                        if (bits & 0x08) rgba[rowOffset + x * 4 + channel] |= value;
+                        x++;
+                        if (bits & 0x04) rgba[rowOffset + x * 4 + channel] |= value;
+                        x++;
+                        if (bits & 0x02) rgba[rowOffset + x * 4 + channel] |= value;
+                        x++;
+                        if (bits & 0x01) rgba[rowOffset + x * 4 + channel] |= value;
+                    }
+
+                    if (hasPartialByte) {
+                        const bits = line[fullByteWidth];
+                        for (let bit = 7; bit >= 0; bit--) {
+                            const x = fullByteWidth * 8 + (7 - bit);
+                            if (x >= img.width) break;
+                            if (bits & (1 << bit)) rgba[rowOffset + x * 4 + channel] |= value;
+                        }
+                    }
+                }
+            }
+
+            img.rgbaPixels = rgba;
         }
 
         while (index <= file.length - 8) {
@@ -242,6 +310,7 @@ const IFF = (function () {
                 }
                 case "BODY":
                     img.body = [];
+                    const bodyEnd = file.index + chunk.size;
 
                     // adjust EHB and HAM palette here as the order of CMAP and CAMG is not defined;
                     if (img.ehb) {
@@ -313,8 +382,19 @@ const IFF = (function () {
                             const planes = [];
                             let lineWidth = (img.width + 15) >> 4; // in words
                             lineWidth *= 2; // in bytes
+                            let repeat128ByteRun = false;
 
                             if (img.compression < 2) {
+                                if (img.compression) {
+                                    const bodyStart = file.index;
+                                    const lineCount = img.height * img.numPlanes;
+                                    repeat128ByteRun = ByteRun1.usesRepeat128(file, lineWidth, bodyStart, bodyEnd, lineCount);
+                                }
+
+                                if (img.trueColor && !parent) {
+                                    decodeTrueColorBody(lineWidth, bodyEnd, repeat128ByteRun);
+                                    break;
+                                }
 
                                 for (let y = 0; y < img.height; y++) {
                                     pixels[y] = [];
@@ -323,35 +403,12 @@ const IFF = (function () {
                                     for (let plane = 0; plane < img.numPlanes; plane++) {
                                         planes[plane] = planes[plane] || [];
                                         planes[plane][y] = planes[plane][y] || [];
-                                        const line = [];
-                                        if (img.compression) {
-
-                                            // RLE compression
-                                            let pCount = 0;
-                                            while (pCount < lineWidth) {
-                                                var b = file.readUbyte();
-                                                if (b === 128) break;
-                                                if (b > 128) {
-                                                    let b2 = file.readUbyte();
-                                                    for (var k = 0; k < 257 - b; k++) {
-                                                        line.push(b2);
-                                                        pCount++;
-                                                    }
-                                                } else {
-                                                    for (k = 0; k <= b; k++) {
-                                                        line.push(file.readUbyte());
-                                                    }
-                                                    pCount += b + 1;
-                                                }
-                                            }
-                                        } else {
-                                            for (let x = 0; x < lineWidth; x++) {
-                                                line.push(file.readUbyte());
-                                            }
-                                        }
+                                        const line = img.compression
+                                            ? readByteRunLine(lineWidth, bodyEnd, repeat128ByteRun)
+                                            : readUncompressedLine(lineWidth);
 
                                         // add bitplane line to pixel values;
-                                        for (b = 0; b < lineWidth; b++) {
+                                        for (let b = 0; b < lineWidth; b++) {
                                             const val = line[b];
                                             for (i = 7; i >= 0; i--) {
                                                 let x = b * 8 + (7 - i);
@@ -435,7 +492,7 @@ const IFF = (function () {
                                     for (let y = 0; y < img.height; ++y) {
                                         planes[plane][y] = planes[plane][y] || [];
                                         pixels[y] = pixels[y] || [];
-                                        for (b = 0; b < lineWidth; b++) {
+                                        for (let b = 0; b < lineWidth; b++) {
                                             const val = lines[y * lineWidth + b];
                                             for (i = 7; i >= 0; i--) {
                                                 let x = b * 8 + (7 - i);
@@ -770,6 +827,11 @@ const IFF = (function () {
         }
         //const ctx = canvas.getContext("2d");
         //let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        if (img.rgbaPixels && pixelWidth === 1 && canvas.width === img.width) {
+            ctx.putImageData(new ImageData(img.rgbaPixels, img.width, img.height), 0, 0);
+            return canvas;
+        }
 
         if (!img.ham && !img.trueColor && img.colourRange && img.colourRange.length > 0){
             // Executive decision right here:
