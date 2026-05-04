@@ -23,9 +23,9 @@ var Resizer = function(editor){
         if (!sizeBox) createSizeBox(editor.getViewPort());
         sizeBox.classList.add("active");
         sizeBox.classList.toggle("hot",!!options.hot);
-        if (options.aspect) {
-            aspectRatio = options.aspect;
-            console.log("setting AR to " + aspectRatio)
+        if (!options.silent) {
+            touchData.isResizing = false;
+            aspectRatio = options.aspect || 1;
         }
         canRotate = !!options.canRotate;
         sizeBox.classList.toggle("canrotate",canRotate);
@@ -102,7 +102,20 @@ var Resizer = function(editor){
 
     EventBus.on(EVENT.modifierKeyChanged,function(){
         if (sizeBox && sizeBox.classList.contains("active") && currentSize){
+            let before = Object.assign({}, currentSize);
+            // On Shift release during a drag, restore the original unconstrained dimensions
+            if (!Input.isShiftDown() && Input.isPointerDown() && currentSize._width){
+                currentSize.width = currentSize._width;
+                currentSize.height = currentSize._height;
+                delete currentSize._width;
+                delete currentSize._height;
+            }
             updateSizeBox();
+            if (currentSize.width !== before.width || currentSize.height !== before.height ||
+                    currentSize.left !== before.left || currentSize.top !== before.top){
+                previousSize = before;
+                EventBus.trigger(EVENT.sizerChanged, {from: previousSize, to: currentSize});
+            }
         }
     });
 
@@ -206,15 +219,17 @@ var Resizer = function(editor){
         let zoom = editor.getZoom();
 
         if (Input.isShiftDown() && Input.isPointerDown() && !touchData.isRotating){
-            // aspect ratio lock
+            // aspect ratio lock — use the original selection AR when resizing a handle, otherwise use aspectRatio (1 = square for new selections)
+            let ar = (touchData.isResizing && touchData.startSelectHeight)
+                ? touchData.startSelectWidth / touchData.startSelectHeight
+                : aspectRatio;
             currentSize._width = currentSize._width||currentSize.width;
             currentSize._height = currentSize._height||currentSize.height;
-            //let size = Math.min(currentSize._width,currentSize._height);
             let w = currentSize._width;
-            let h = w / aspectRatio;
+            let h = w / ar;
             if (w>currentSize.width || h>currentSize.height){
                 h = currentSize.height;
-                w = h * aspectRatio;
+                w = h * ar;
             }
             w = Math.round(w);
             h = Math.round(h);

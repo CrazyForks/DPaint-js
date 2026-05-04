@@ -84,23 +84,29 @@ var Cursor = function(){
         document.body.classList.add("cursor-" + cursorName);
     }
 
-    Eventbus.on(EVENT.modifierKeyChanged,()=>{
-        /*if ((Input.isShiftDown() || Input.isAltDown()) && !Input.isMetaDown() && Editor.canPickColor()){
-            me.override("colorpicker");
-        }else{
-            me.resetOverride();
-        }*/
+    function updateSelectionModifierCursor(){
+        let tool = Editor.getCurrentTool();
+        let isSelectionTool = tool === COMMAND.SELECT || tool === COMMAND.POLYGONSELECT || tool === COMMAND.FLOODSELECT;
+        document.body.classList.toggle("selection-add", isSelectionTool && Input.isShiftDown() && !Input.isAltDown());
+        document.body.classList.toggle("selection-subtract", isSelectionTool && Input.isAltDown() && !Input.isShiftDown());
+    }
 
+    Eventbus.on(EVENT.modifierKeyChanged,()=>{
         if ((Input.isShiftDown() || Input.isAltDown()) && Editor.canPickColor(Input.isPointerDown())){
             me.override("colorpicker");
         }else{
             me.resetOverride();
         }
 
-
         if (Input.isSpaceDown()){
             me.override("pan");
         }
+
+        updateSelectionModifierCursor();
+    })
+
+    Eventbus.on(EVENT.toolChanged,()=>{
+        document.body.classList.remove("selection-add","selection-subtract");
     })
 
     return me;

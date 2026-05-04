@@ -543,6 +543,8 @@ let Canvas = function(parent){
                         break;
                     case COMMAND.SELECT:
                         touchData.isSelecting = true;
+                        if (Input.isShiftDown()) selectBox.startCombine("add");
+                        else if (Input.isAltDown()) selectBox.startCombine("subtract");
                         selectBox.boundingBoxSelect(point);
                         break;
                     case COMMAND.SELECTLAYER:
@@ -555,13 +557,20 @@ let Canvas = function(parent){
                         EventBus.trigger(COMMAND.TRANSFORMLAYER);
                         break;
                     case COMMAND.POLYGONSELECT:
+                        if (!touchData.isPolySelect){
+                            if (Input.isShiftDown()) selectBox.startCombine("add");
+                            else if (Input.isAltDown()) selectBox.startCombine("subtract");
+                        }
                         touchData.isPolySelect = true;
                         selectBox.polySelect(point);
                         break;
                     case COMMAND.FLOODSELECT:
+                        if (Input.isShiftDown()) selectBox.startCombine("add");
+                        else if (Input.isAltDown()) selectBox.startCombine("subtract");
                         let c = selectBox.floodSelect(ImageFile.getActiveLayer().getCanvas(),point);
                         selectBox.activate(COMMAND.FLOODSELECT);
                         selectBox.applyCanvas(c);
+                        selectBox.finalizeCombine();
                         break;
                     case COMMAND.FLOOD:
                         HistoryService.start(EVENT.layerContentHistory);
@@ -903,9 +912,15 @@ let Canvas = function(parent){
                             resizer.remove();
                             EventBus.trigger(EVENT.layerContentChanged,{commit:true});
                             EventBus.trigger(COMMAND.CLEARSELECTION);
+                        } else {
+                            selectBox.finalizeCombine(touchData.selection);
                         }
                     }else{
-                        EventBus.trigger(COMMAND.CLEARSELECTION);
+                        if (selectBox.hasPendingCombine()){
+                            selectBox.finalizeCombine(null);
+                        } else {
+                            EventBus.trigger(COMMAND.CLEARSELECTION);
+                        }
                     }
                 }
 

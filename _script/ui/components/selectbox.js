@@ -33,9 +33,15 @@ let SelectBox = ((editor,resizer)=>{
     let shape;
     let selectionTool;
     let timeout;
+    let selectionMode = "replace"; // "replace", "add", "subtract"
+    let pendingBaseSelection;
+    let pendingNewRect;
 
     let border = $div("border","<svg xmlns='http://www.w3.org/2000/svg' viewbox='0 0 40 40' preserveAspectRatio='none'><rect class='white' width='40' height='40'/><rect class='ants'  width='40' height='40'/>/svg>");
     box.appendChild(border);
+
+    let border2 = $div("border","<svg xmlns='http://www.w3.org/2000/svg' viewbox='0 0 40 40' preserveAspectRatio='none'><rect class='white' width='40' height='40'/><rect class='ants'  width='40' height='40'/>/svg>");
+    box.appendChild(border2);
 
     let content = $div("content");
     box.appendChild(content);
@@ -94,8 +100,90 @@ let SelectBox = ((editor,resizer)=>{
         return box.classList.contains("active");
     }
 
+    me.startCombine = (mode)=>{
+        pendingBaseSelection = Selection.get();
+        selectionMode = mode;
+    }
+
+    me.hasPendingCombine = ()=>{
+        return selectionMode !== "replace";
+    }
+
+    // newRect: explicit new rect for rect-select combine; omit for polygon/flood (uses Selection.get())
+    me.finalizeCombine = (newRect)=>{
+        if (selectionMode === "replace"){
+            pendingNewRect = undefined;
+            return;
+        }
+        let mode = selectionMode;
+        let base = pendingBaseSelection;
+        selectionMode = "replace";
+        pendingBaseSelection = undefined;
+        pendingNewRect = undefined;
+        border2.classList.remove("active","filled");
+
+        // For rect-select, newRect is passed explicitly.
+        // For polygon/flood, it's omitted and we read from the current Selection.
+        let newSelection = newRect || Selection.get();
+
+        if (!base){
+            if (mode === "subtract"){
+                Selection.clear();
+            } else if (newRect){
+                Selection.set(newRect);
+            }
+            return;
+        }
+        if (!newSelection){
+            // No new selection drawn: restore base
+            Selection.set(base);
+            return;
+        }
+
+        let w = ImageFile.getCurrentFile().width;
+        let h = ImageFile.getCurrentFile().height;
+        let baseCanvas = selectionToCanvas(base, w, h);
+        let newCanvas = selectionToCanvas(newSelection, w, h);
+
+        let result = document.createElement("canvas");
+        result.width = w;
+        result.height = h;
+        let resultCtx = result.getContext("2d");
+
+        if (mode === "add"){
+            resultCtx.drawImage(baseCanvas, 0, 0);
+            resultCtx.drawImage(newCanvas, 0, 0);
+        } else {
+            resultCtx.drawImage(baseCanvas, 0, 0);
+            resultCtx.globalCompositeOperation = "destination-out";
+            resultCtx.drawImage(newCanvas, 0, 0);
+            resultCtx.globalCompositeOperation = "source-over";
+        }
+
+        resultCtx.globalCompositeOperation = "source-in";
+        resultCtx.fillStyle = "white";
+        resultCtx.fillRect(0, 0, w, h);
+        resultCtx.globalCompositeOperation = "source-over";
+
+        let outline = outLineCanvas(resultCtx, false);
+        if (outline.box.w <= 0 || outline.box.h <= 0){
+            Selection.clear();
+        } else {
+            Selection.set({
+                left: outline.box.x,
+                top: outline.box.y,
+                width: outline.box.w,
+                height: outline.box.h,
+                canvas: result,
+                outline: outline.lines
+            });
+        }
+    }
+
     me.boundingBoxSelect = (point)=>{
-        EventBus.trigger(COMMAND.CLEARSELECTION);
+        if (selectionMode === "replace"){
+            EventBus.trigger(COMMAND.CLEARSELECTION);
+        }
         me.activate(COMMAND.SELECT);
         resizer.init({
             x: point.x,
@@ -114,7 +202,7 @@ let SelectBox = ((editor,resizer)=>{
 
         if (!selecting){
             let currentSelection = Selection.get();
-            if (currentSelection && currentSelection.points && currentSelection.points.length){
+            if (selectionMode === "replace" && currentSelection && currentSelection.points && currentSelection.points.length){
                 selectionPoints = currentSelection.points;
             }else{
                 selectionPoints = [];
@@ -136,6 +224,7 @@ let SelectBox = ((editor,resizer)=>{
 
     me.endPolySelect = (fromClick)=>{
         selecting = false;
+        me.finalizeCombine();
         timeout = setTimeout(()=>{
             EventBus.trigger(EVENT.endPolygonSelect);
             Input.setActiveKeyHandler();
@@ -340,6 +429,19 @@ let SelectBox = ((editor,resizer)=>{
         me.applyCanvas(c.canvas);
     }
 
+    function updateCombineBox(){
+        if (selectionMode !== "replace" && pendingNewRect && pendingNewRect.width > 0 && pendingNewRect.height > 0){
+            let zoom = editor.getZoom();
+            border2.style.left = pendingNewRect.left * zoom + "px";
+            border2.style.top = pendingNewRect.top * zoom + "px";
+            border2.style.width = pendingNewRect.width * zoom + "px";
+            border2.style.height = pendingNewRect.height * zoom + "px";
+            border2.classList.add("active");
+        } else {
+            border2.classList.remove("active","filled");
+        }
+    }
+
     function renderSelection(){
         let selection = Selection.get();
         let zoom = editor.getZoom();
@@ -388,21 +490,23 @@ let SelectBox = ((editor,resizer)=>{
             if (selectionTool === COMMAND.SELECT && resizer.isActive()){
                 let r = resizer.get();
                 if (r && (r.left !== selection.left || r.top !== selection.top || r.width !== selection.width || r.height !== selection.height)){
-                    resizer.init({
-                        x:selection.left,
-                        y:selection.top,
-                        width:selection.width,
-                        height:selection.height,
-                        rotation:0,
-                        aspectRatio:1,
-                        canRotate: false,
-                        silent: true
-                    });
+                    let sx = selection.left, sy = selection.top, sw = selection.width, sh = selection.height;
+                    let doInit = ()=>{
+                        resizer.init({x:sx, y:sy, width:sw, height:sh, rotation:0, aspectRatio:1, canRotate:false, silent:true});
+                    };
+                    // Defer when Shift+pointer-down to avoid the square-constraint in updateSizeBox
+                    // corrupting the combined selection bounds (pointer-down class is removed after onDragEnd returns)
+                    if (Input.isShiftDown() && Input.isPointerDown()){
+                        setTimeout(doInit, 0);
+                    } else {
+                        doInit();
+                    }
                 }
             }
         }else{
             me.deActivate();
         }
+        updateCombineBox();
     }
 
     me.zoom = (zoom)=>{
@@ -560,11 +664,34 @@ let SelectBox = ((editor,resizer)=>{
         content.innerHTML = "";
         border.classList.remove("active");
         border.classList.remove("filled");
+        border2.classList.remove("active","filled");
 
         if (selecting){
             selecting = false;
             me.endPolySelect();
         }
+    }
+
+    function selectionToCanvas(selection, w, h){
+        let c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        let ctx = c.getContext("2d");
+        ctx.fillStyle = "white";
+        if (selection.canvas){
+            ctx.drawImage(selection.canvas, 0, 0);
+        } else if (selection.points && selection.points.length){
+            ctx.beginPath();
+            selection.points.forEach((point, index)=>{
+                if (index) ctx.lineTo(point.x, point.y);
+                else ctx.moveTo(point.x, point.y);
+            });
+            ctx.closePath();
+            ctx.fill();
+        } else {
+            ctx.fillRect(selection.left, selection.top, selection.width, selection.height);
+        }
+        return c;
     }
 
     function updateBoundingBox(){
@@ -604,6 +731,11 @@ let SelectBox = ((editor,resizer)=>{
 
     EventBus.on(EVENT.sizerChanged,(change)=>{
         if (me.isActive() && editor.isActive()){
+            if (selectionMode !== "replace"){
+                pendingNewRect = change.to;
+                updateCombineBox();
+                return;
+            }
             let fromSize = change.from;
             let currentSize = change.to;
             if (currentSize){
@@ -698,6 +830,8 @@ let SelectBox = ((editor,resizer)=>{
     EventBus.on(EVENT.toolChanged,(tool)=>{
         if (me.isActive()){
             selectionTransform = undefined;
+            selectionMode = "replace";
+            pendingBaseSelection = undefined;
             box.classList.remove("capture");
             resizer.remove();
         }

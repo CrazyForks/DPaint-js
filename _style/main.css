@@ -1,3 +1,4 @@
+@charset "UTF-8";
 html {
   box-sizing: border-box;
   overflow: hidden;
@@ -2635,6 +2636,32 @@ body.hoverviewport.cursor-rotate {
 }
 body.hoverviewport.cursor-select {
   cursor: crosshair;
+}
+body.hoverviewport.cursor-select.selection-add .cursor, body.hoverviewport.cursor-select.selection-subtract .cursor {
+  display: block;
+}
+body.hoverviewport.cursor-select.selection-add .cursor::after, body.hoverviewport.cursor-select.selection-subtract .cursor::after {
+  position: absolute;
+  left: 9px;
+  top: 21px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: white;
+  border: 1.5px solid #333;
+  font-size: 11px;
+  line-height: 13px;
+  font-weight: bold;
+  text-align: center;
+  color: #333;
+  font-family: sans-serif;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+body.hoverviewport.cursor-select.selection-add .cursor::after {
+  content: "+";
+}
+body.hoverviewport.cursor-select.selection-subtract .cursor::after {
+  content: "−";
 }
 body.hoverviewport.cursor-text {
   cursor: text;
